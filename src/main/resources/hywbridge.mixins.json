@@ -1,0 +1,24 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.hywbridge.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "hywbridge.refmap.json",
+  "mixins": [
+    "SelectionSystemMixin",
+    "MoveCommandPacketMixin",
+    "TargetUpdatePacketMixin",
+    "NPCMovementMixin",
+    "ServerRelationHelperMixin",
+    "NPCAttackSelectorMixin"
+  ],
+  "client": [
+    "SelectionHandlerMixin",
+    "EntityRenderDispatcherBridgeMixin",
+    "FreecamTargetRendererMixin",
+    "SelectionHUDMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
