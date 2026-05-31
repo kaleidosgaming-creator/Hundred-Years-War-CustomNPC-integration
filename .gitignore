@@ -30,3 +30,6 @@ forge*changelog.txt
 Thumbs.db
 *.log
 libs/
+
+# Forge MDK example mod (non serve nel repo)
+src/main/java/com/example/
