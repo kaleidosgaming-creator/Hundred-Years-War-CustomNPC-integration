@@ -12,8 +12,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import ydmsama.hundred_years_war.client.freecam.Freecam;
-import ydmsama.hundred_years_war.client.utils.ClientCreativeModeSettings;
 import ydmsama.hundred_years_war.client.freecam.selection.SelectionHandler;
+import ydmsama.hundred_years_war.client.utils.ClientCreativeModeSettings;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +31,8 @@ public class SelectionHandlerMixin {
 
     private final List<Entity> bridgeSelectedNPCs = new ArrayList<>();
     private long bridgeSelectionStartTime = 0;
+    // true solo se in questa sessione abbiamo trovato/scelto dei CNPC
+    private boolean bridgeUpdatedThisSession = false;
 
     @Inject(method = "resolveSelectedVehicleEntity", at = @At("HEAD"), cancellable = true)
     private void injectResolveVehicle(Entity entity, CallbackInfoReturnable<Entity> cir) {
@@ -66,12 +68,13 @@ public class SelectionHandlerMixin {
         if (!NPCOwnerHelper.isHywManagedNPC(npc)) { cir.setReturnValue(false); return; }
         if (mc.player == null) { cir.setReturnValue(false); return; }
         if (!isYours(npc, mc)) cir.setReturnValue(false);
-        // Se è nostro lascia proseguire la geometria di HYW
     }
 
     @Inject(method = "startSelection", at = @At("HEAD"))
     private void injectStartSelectionTime(double x, double y, CallbackInfo ci) {
         bridgeSelectionStartTime = System.currentTimeMillis();
+        bridgeUpdatedThisSession = false;
+        bridgeSelectedNPCs.clear();
     }
 
     @Inject(method = "updateSelectedEntities", at = @At("TAIL"))
@@ -85,9 +88,11 @@ public class SelectionHandlerMixin {
         if (boxW < 1.0 && boxH < 1.0) return;
 
         boolean isSingleClick = boxW < 5.0 && boxH < 5.0;
-        if (isSingleClick) return;
+        if (isSingleClick) return; // gestito in endSelection
 
         bridgeSelectedNPCs.clear();
+        bridgeUpdatedThisSession = true;
+
         for (Entity entity : mc.level.entitiesForRendering()) {
             if (!(entity instanceof EntityNPCInterface npc)) continue;
             if (!NPCOwnerHelper.isHywManagedNPC(npc)) continue;
@@ -120,11 +125,19 @@ public class SelectionHandlerMixin {
                     catch (Exception ignored) {}
                 });
                 bridgeSelectedNPCs.clear();
+                bridgeUpdatedThisSession = false;
             }
             return;
         }
-        for (Entity e : bridgeSelectedNPCs) {
-            if (!selectedEntities.contains(e)) selectedEntities.add(e);
+
+        // Aggiungi CNPC solo se erano stati selezionati in questa sessione
+        if (bridgeUpdatedThisSession) {
+            for (Entity e : bridgeSelectedNPCs) {
+                if (!selectedEntities.contains(e)) selectedEntities.add(e);
+            }
+        } else if (wasSingleClick) {
+            // Click su unità HYW — non aggiungere CNPC precedenti
+            bridgeSelectedNPCs.clear();
         }
     }
 
@@ -169,6 +182,7 @@ public class SelectionHandlerMixin {
 
         if (closest != null) {
             bridgeSelectedNPCs.add(closest);
+            bridgeUpdatedThisSession = true;
             selectedEntities.add(closest);
         }
     }

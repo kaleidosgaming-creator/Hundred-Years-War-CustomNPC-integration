@@ -8,6 +8,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.storage.LevelResource;
 import ydmsama.hundred_years_war.main.utils.RelationSystem;
 import ydmsama.hundred_years_war.main.utils.TeamRelationData;
 import com.hywbridge.util.BridgeSelectionStorage;
@@ -96,6 +97,9 @@ public class HYWBridgeCommands {
             RelationSystem.setRelation(ownerUUID, teamUUID,
                     RelationSystem.RelationType.FRIENDLY);
 
+            // Salva immediatamente su disco
+            saveNow(ctx.getSource());
+
             ctx.getSource().sendSuccess(() -> Component.literal(
                     "Created faction '" + name + "'. Use /hywbridge faction hostile/friendly <f1> <f2> to set relations."), false);
             com.hywbridge.HYWBridge.LOGGER.info(
@@ -117,17 +121,21 @@ public class HYWBridgeCommands {
 
         if (uuid1 == null) {
             ctx.getSource().sendFailure(Component.literal(
-                    "Faction '" + f1 + "' not found. Create it first."));
+                    "Faction '" + f1 + "' not found. Use /hywbridge faction create " + f1));
             return 0;
         }
         if (uuid2 == null) {
             ctx.getSource().sendFailure(Component.literal(
-                    "Faction '" + f2 + "' not found. Create it first."));
+                    "Faction '" + f2 + "' not found. Use /hywbridge faction create " + f2));
             return 0;
         }
 
         RelationSystem.setRelation(uuid1, uuid2, type);
         RelationSystem.setRelation(uuid2, uuid1, type);
+
+        // Salva immediatamente su disco
+        saveNow(ctx.getSource());
+
         ctx.getSource().sendSuccess(() -> Component.literal(
                 f1 + " ↔ " + f2 + " = " + type.name().toLowerCase()), false);
         return 1;
@@ -185,13 +193,26 @@ public class HYWBridgeCommands {
             com.hywbridge.HYWBridge.LOGGER.error("Error assigning HYW units", e);
         }
 
-        // Sincronizza immediatamente il nuovo stato al client
+        // Sincronizza immediatamente al client
         FactionSyncHandler.syncNPCOwners(player);
 
         final int finalCount = count;
         ctx.getSource().sendSuccess(() -> Component.literal(
                 "Assigned " + finalCount + " units to faction '" + factionName + "'"), false);
         return 1;
+    }
+
+    private static void saveNow(CommandSourceStack source) {
+        try {
+            java.nio.file.Path savePath = source.getServer()
+                    .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                    .getParent()
+                    .resolve("relations.dat");
+            RelationSystem.saveRelations(savePath);
+            com.hywbridge.HYWBridge.LOGGER.info("Saved relations to {}", savePath);
+        } catch (Exception e) {
+            com.hywbridge.HYWBridge.LOGGER.error("Failed to save relations", e);
+        }
     }
 
     public static UUID findTeamUUID(String factionName) {
