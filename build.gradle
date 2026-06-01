@@ -5,7 +5,7 @@ plugins {
     id 'org.spongepowered.mixin' version '0.7.+'
 }
 
-version = '1.20.1-0.0.1-forge'
+version = '1.20.1-0.0.2-dev-forge'
 group = 'com.hywbridge'
 archivesBaseName = 'hywbridge'
 
