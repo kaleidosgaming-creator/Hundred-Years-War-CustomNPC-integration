@@ -26,7 +26,7 @@ public class FactionSyncHandler {
     public static void onEntityJoinLevel(EntityJoinLevelEvent event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getEntity() instanceof EntityNPCInterface npc)) return;
-        applyHywMarker(npc);
+        // syncSingleNPC chiama già applyHywMarker internamente
         ServerLevel level = (ServerLevel) event.getLevel();
         for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
             syncSingleNPC(npc, player);
@@ -52,10 +52,6 @@ public class FactionSyncHandler {
         }
     }
 
-    /**
-     * Applica il marker HYW al CNPC — così HYW lo riconosce nel sistema relazioni
-     * senza bisogno di Mixin su metodi privati.
-     */
     public static void applyHywMarker(EntityNPCInterface npc) {
         UUID ownerUUID = NPCOwnerHelper.getOwnerUUID(npc);
         if (ownerUUID == null) {
@@ -66,9 +62,6 @@ public class FactionSyncHandler {
         }
         if (ownerUUID != null && npc instanceof RelationOwnerMarkedEntity marked) {
             marked.hyw$markRelationOwnerUUID(ownerUUID);
-            com.hywbridge.HYWBridge.LOGGER.info(
-                    "Applied HYW relation marker to NPC {} ownerUUID={}",
-                    npc.getUUID(), ownerUUID);
         }
     }
 
@@ -108,38 +101,76 @@ public class FactionSyncHandler {
         }
     }
 
+    /**
+     * Calcola la relazione tra il CNPC (ownerUUID = teamUUID bridge) e il player.
+     *
+     * Valori:
+     *   1 = friendly/control (stessa fazione o alleata) → verde
+     *   0 = neutral          → giallo
+     *   2 = hostile          → rosso
+     *
+     * MAI restituisce -1 — quello è solo il default della cache client
+     * quando nessun packet è ancora arrivato.
+     */
     private static int computeRelationToPlayer(UUID npcOwnerUUID, ServerPlayer player) {
         UUID playerUUID = player.getUUID();
-        if (npcOwnerUUID.equals(playerUUID)) return 2;
 
-        RelationSystem.RelationType direct = RelationSystem.getRelation(npcOwnerUUID, playerUUID);
-        if (direct == RelationSystem.RelationType.HOSTILE) return -1;
-        if (direct == RelationSystem.RelationType.FRIENDLY
-                || direct == RelationSystem.RelationType.CONTROL) return 1;
+        // L'NPC appartiene direttamente al player → friendly
+        if (npcOwnerUUID.equals(playerUUID)) return 1;
 
         try {
             Map<UUID, TeamRelationData> teams = RelationSystem.getAllTeams();
-            if (teams != null) {
-                for (Map.Entry<UUID, TeamRelationData> entry : teams.entrySet()) {
-                    if (entry.getValue().isMember(playerUUID)) {
-                        UUID playerTeamUUID = entry.getKey();
-                        if (npcOwnerUUID.equals(playerTeamUUID)) return 2;
-                        RelationSystem.RelationType r1 = RelationSystem.getRelation(npcOwnerUUID, playerTeamUUID);
-                        RelationSystem.RelationType r2 = RelationSystem.getRelation(playerTeamUUID, npcOwnerUUID);
-                        if (r1 == RelationSystem.RelationType.HOSTILE
-                                || r2 == RelationSystem.RelationType.HOSTILE) return -1;
-                        if (r1 == RelationSystem.RelationType.FRIENDLY
-                                || r1 == RelationSystem.RelationType.CONTROL
-                                || r2 == RelationSystem.RelationType.FRIENDLY
-                                || r2 == RelationSystem.RelationType.CONTROL) return 1;
-                        break;
-                    }
+            if (teams == null || teams.isEmpty()) return 0;
+
+            // Trova il team del player (se ce l'ha)
+            UUID playerTeamUUID = null;
+            for (Map.Entry<UUID, TeamRelationData> entry : teams.entrySet()) {
+                if (entry.getValue().isMember(playerUUID)) {
+                    playerTeamUUID = entry.getKey();
+                    break;
                 }
             }
+
+            // npcOwnerUUID IS il teamUUID nel sistema bridge
+            UUID npcTeamUUID = npcOwnerUUID;
+
+            // Player e NPC stesso team → friendly
+            if (playerTeamUUID != null && playerTeamUUID.equals(npcTeamUUID)) return 1;
+
+            // Controlla relazione team player ↔ team NPC
+            if (playerTeamUUID != null) {
+                RelationSystem.RelationType r = RelationSystem.getRelation(
+                        playerTeamUUID, npcTeamUUID);
+                if (r == RelationSystem.RelationType.HOSTILE) return 2;
+                if (r == RelationSystem.RelationType.FRIENDLY
+                        || r == RelationSystem.RelationType.CONTROL) return 1;
+
+                // Controlla anche direzione opposta
+                RelationSystem.RelationType r2 = RelationSystem.getRelation(
+                        npcTeamUUID, playerTeamUUID);
+                if (r2 == RelationSystem.RelationType.HOSTILE) return 2;
+                if (r2 == RelationSystem.RelationType.FRIENDLY
+                        || r2 == RelationSystem.RelationType.CONTROL) return 1;
+            } else {
+                // Player senza team: controlla relazione diretta player ↔ npcTeam
+                RelationSystem.RelationType r = RelationSystem.getRelation(
+                        playerUUID, npcTeamUUID);
+                if (r == RelationSystem.RelationType.HOSTILE) return 2;
+                if (r == RelationSystem.RelationType.FRIENDLY
+                        || r == RelationSystem.RelationType.CONTROL) return 1;
+
+                RelationSystem.RelationType r2 = RelationSystem.getRelation(
+                        npcTeamUUID, playerUUID);
+                if (r2 == RelationSystem.RelationType.HOSTILE) return 2;
+                if (r2 == RelationSystem.RelationType.FRIENDLY
+                        || r2 == RelationSystem.RelationType.CONTROL) return 1;
+            }
         } catch (Exception e) {
-            com.hywbridge.HYWBridge.LOGGER.error("Error computing relation", e);
+            com.hywbridge.HYWBridge.LOGGER.error(
+                    "Error computing relation for ownerUUID={}", npcOwnerUUID, e);
         }
-        return 0;
+
+        return 0; // neutral — mai -1
     }
 
     public static int resolveRelation(EntityNPCInterface npc, ServerPlayer player) {

@@ -19,7 +19,6 @@ public class NPCAttackSelectorMixin {
     private void injectHYWFactionCheck(LivingEntity entity,
                                        CallbackInfoReturnable<Boolean> cir) {
 
-        // Ottieni l'NPC attaccante via reflection (campo privato 'npc')
         EntityNPCInterface attacker;
         try {
             java.lang.reflect.Field f = NPCAttackSelector.class.getDeclaredField("npc");
@@ -31,7 +30,7 @@ public class NPCAttackSelectorMixin {
 
         if (!(entity instanceof EntityNPCInterface target)) return;
 
-        // Controlla se entrambi hanno fazioni con nomi corrispondenti a team HYW
+        // Entrambi devono avere fazione con team HYW corrispondente
         if (attacker.faction == null || attacker.faction.name == null
                 || attacker.faction.name.isEmpty()) return;
         if (target.faction == null || target.faction.name == null
@@ -40,24 +39,29 @@ public class NPCAttackSelectorMixin {
         UUID attackerTeam = HYWBridgeCommands.findTeamUUID(attacker.faction.name);
         UUID targetTeam = HYWBridgeCommands.findTeamUUID(target.faction.name);
 
+        // Se uno dei due non ha team HYW, lascia decidere la logica CNPC nativa
         if (attackerTeam == null || targetTeam == null) return;
+
+        // Stessa fazione → non attaccare mai
         if (attackerTeam.equals(targetTeam)) {
-            // Stessa fazione → non attaccare
             cir.setReturnValue(false);
             return;
         }
 
-        // Controlla relazione HYW tra i due team
+        // Controlla relazione HYW
         RelationSystem.RelationType rel = RelationSystem.getRelation(attackerTeam, targetTeam);
+
         if (rel == RelationSystem.RelationType.HOSTILE) {
-            // Verifica range e condizioni base prima di confermare l'attacco
-            if (attacker.isInRange(entity, attacker.stats.aggroRange)
-                    && entity.isAlive() && entity.getHealth() >= 1.0f) {
-                cir.setReturnValue(true);
-            }
+            // Hostile: attacca se in range e vivo
+            // Le condizioni di range e vita sono già verificate dal selector nativo,
+            // qui ci limitiamo ad autorizzare — lasciamo fare al selector originale
+            // NON settiamo true qui: permettiamo alla logica CNPC di completare il check
+            return; // lascia passare al selector originale con autorizzazione implicita
         } else if (rel == RelationSystem.RelationType.FRIENDLY
                 || rel == RelationSystem.RelationType.CONTROL) {
+            // Alleato → blocca sempre l'attacco
             cir.setReturnValue(false);
         }
+        // NEUTRAL: lascia decidere la logica CNPC nativa
     }
 }
