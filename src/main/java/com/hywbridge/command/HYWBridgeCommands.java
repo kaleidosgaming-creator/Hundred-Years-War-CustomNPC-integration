@@ -23,8 +23,6 @@ import java.util.UUID;
 
 public class HYWBridgeCommands {
 
-    // L'owner di una fazione bridge = il teamUUID stesso
-    // così HYW riconosce l'entità come membro del team
     public static UUID factionOwnerUUID(String factionName) {
         return factionTeamUUID(factionName);
     }
@@ -41,6 +39,10 @@ public class HYWBridgeCommands {
                         .then(Commands.literal("create")
                                 .then(Commands.argument("name", StringArgumentType.word())
                                         .executes(ctx -> createFaction(ctx))))
+
+                        .then(Commands.literal("delete")
+                                .then(Commands.argument("name", StringArgumentType.word())
+                                        .executes(ctx -> deleteFaction(ctx))))
 
                         .then(Commands.literal("hostile")
                                 .then(Commands.argument("faction1", StringArgumentType.word())
@@ -77,7 +79,6 @@ public class HYWBridgeCommands {
         }
 
         try {
-            // teamUUID è sia il team che l'"owner" — un solo UUID per tutto
             TeamRelationData team = new TeamRelationData(teamUUID, name);
             team.addMember(teamUUID, TeamRelationData.MemberType.OWNER);
 
@@ -97,19 +98,94 @@ public class HYWBridgeCommands {
                     (java.util.Map<UUID, Object>) relationDataMap.get(null);
             rdm.put(teamUUID, team);
 
-            // Il teamUUID è friendly con se stesso
             RelationSystem.setRelation(teamUUID, teamUUID,
                     RelationSystem.RelationType.CONTROL);
 
             saveNow(ctx.getSource());
 
             ctx.getSource().sendSuccess(() -> Component.literal(
-                    "Created faction '" + name + "'. UUID=" + teamUUID), false);
+                    "Created faction '" + name + "'."), false);
             com.hywbridge.HYWBridge.LOGGER.info(
                     "Created faction '{}' teamUUID={}", name, teamUUID);
         } catch (Exception e) {
             ctx.getSource().sendFailure(Component.literal("Failed: " + e.getMessage()));
             com.hywbridge.HYWBridge.LOGGER.error("Failed to create faction", e);
+        }
+        return 1;
+    }
+
+    private static int deleteFaction(CommandContext<CommandSourceStack> ctx) {
+        String name = StringArgumentType.getString(ctx, "name");
+
+        UUID teamUUID = findTeamUUID(name);
+        if (teamUUID == null) {
+            ctx.getSource().sendFailure(Component.literal(
+                    "Faction '" + name + "' not found."));
+            return 0;
+        }
+
+        try {
+            // Rimuovi dai map interni di HYW
+            java.lang.reflect.Field teamDataMap = RelationSystem.class
+                    .getDeclaredField("TeamDataMap");
+            teamDataMap.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<UUID, ?> tdm =
+                    (java.util.Map<UUID, ?>) teamDataMap.get(null);
+            tdm.remove(teamUUID);
+
+            java.lang.reflect.Field relationDataMap = RelationSystem.class
+                    .getDeclaredField("RelationDataMap");
+            relationDataMap.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<UUID, ?> rdm =
+                    (java.util.Map<UUID, ?>) relationDataMap.get(null);
+            rdm.remove(teamUUID);
+
+            // Pulisci il marker HYW da tutti i CNPC e unità che avevano questa fazione
+            // — senza riavvio
+            final UUID deletedUUID = teamUUID;
+            ctx.getSource().getServer().getAllLevels().forEach(level -> {
+                level.getAllEntities().forEach(entity -> {
+                    // Pulisci marker HYW
+                    if (entity instanceof RelationOwnerMarkedEntity marked) {
+                        if (deletedUUID.equals(marked.hyw$getMarkedRelationOwnerUUID())) {
+                            marked.hyw$clearRelationIdentityMarker();
+                        }
+                    }
+                    // Pulisci NBT tag dai CNPC
+                    if (entity instanceof EntityNPCInterface npc) {
+                        UUID npcOwner = NPCOwnerHelper.getOwnerUUID(npc);
+                        if (deletedUUID.equals(npcOwner)) {
+                            npc.getPersistentData().remove(NPCOwnerHelper.OWNER_TAG);
+                        }
+                    }
+                    // Resetta owner delle unità HYW
+                    if (entity instanceof BaseCombatEntity unit) {
+                        try {
+                            UUID unitOwner = unit.m_21805_();
+                            if (deletedUUID.equals(unitOwner)) {
+                                unit.m_30586_(null);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                });
+            });
+
+            // Sincronizza i client
+            for (ServerPlayer player : ctx.getSource().getServer()
+                    .getPlayerList().getPlayers()) {
+                FactionSyncHandler.syncNPCOwners(player);
+            }
+
+            saveNow(ctx.getSource());
+
+            ctx.getSource().sendSuccess(() -> Component.literal(
+                    "Deleted faction '" + name + "'. All units unassigned."), false);
+            com.hywbridge.HYWBridge.LOGGER.info("Deleted faction '{}'", name);
+        } catch (Exception e) {
+            ctx.getSource().sendFailure(Component.literal("Failed: " + e.getMessage()));
+            com.hywbridge.HYWBridge.LOGGER.error("Failed to delete faction", e);
         }
         return 1;
     }
@@ -164,16 +240,20 @@ public class HYWBridgeCommands {
             return 0;
         }
 
-        UUID teamUUID = factionTeamUUID(factionName);
+        // Cerca prima nei team HYW nativi per nome, poi fallback al UUID bridge
+        UUID teamUUID = findTeamUUID(factionName);
+        if (teamUUID == null) {
+            teamUUID = factionTeamUUID(factionName);
+        }
         if (RelationSystem.getTeamRelationData(teamUUID) == null) {
             ctx.getSource().sendFailure(Component.literal(
                     "Faction '" + factionName + "' not found. Create it first with /hywbridge faction create " + factionName));
             return 0;
         }
 
-        // teamUUID = ownerUUID (stesso UUID per semplicità)
         UUID markerUUID = teamUUID;
-        int count = 0;
+        int cnpcCount = 0;
+        int hywCount = 0;
 
         // Assegna CNPC selezionati
         for (Entity entity : BridgeSelectionStorage.getCustomEntities(player)) {
@@ -182,29 +262,23 @@ public class HYWBridgeCommands {
                 if (npc instanceof RelationOwnerMarkedEntity marked) {
                     marked.hyw$markRelationOwnerUUID(markerUUID);
                 }
-                count++;
-                com.hywbridge.HYWBridge.LOGGER.info(
-                        "Assigned CNPC {} to faction '{}'", npc.getUUID(), factionName);
+                cnpcCount++;
             }
         }
 
         // Assegna unità HYW selezionate
         var selection = SelectionSystem.getSelection(player);
-        int hywCount = selection.getEntities().size();
         com.hywbridge.HYWBridge.LOGGER.info(
-                "HYW selection has {} entities", hywCount);
-
+                "HYW selection has {} entities for assign", selection.getEntities().size());
         for (BaseCombatEntity unit : selection.getEntities()) {
             unit.m_30586_(markerUUID);
             if (unit instanceof RelationOwnerMarkedEntity marked) {
                 marked.hyw$markRelationOwnerUUID(markerUUID);
             }
-            count++;
-            com.hywbridge.HYWBridge.LOGGER.info(
-                    "Assigned HYW unit {} to faction '{}'", unit.getUUID(), factionName);
+            hywCount++;
         }
 
-        if (count == 0) {
+        if (cnpcCount == 0 && hywCount == 0) {
             ctx.getSource().sendFailure(Component.literal(
                     "No units selected. Select units with RTS first, then use this command."));
             return 0;
@@ -212,10 +286,10 @@ public class HYWBridgeCommands {
 
         FactionSyncHandler.syncNPCOwners(player);
 
-        final int finalCount = count;
+        final int fc = cnpcCount, fh = hywCount;
         ctx.getSource().sendSuccess(() -> Component.literal(
-                "Assigned " + finalCount + " units (" + hywCount + " HYW, " +
-                        (finalCount - hywCount) + " CNPC) to faction '" + factionName + "'"), false);
+                "Assigned " + (fc + fh) + " units to '" + factionName +
+                        "' (" + fh + " HYW, " + fc + " CNPC)"), false);
         return 1;
     }
 
